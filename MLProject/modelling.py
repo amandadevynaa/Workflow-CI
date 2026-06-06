@@ -18,9 +18,11 @@ parser.add_argument('--test_size', type=float, default=0.2)
 parser.add_argument('--random_state', type=int, default=42)
 args = parser.parse_args()
 
-# SETUP MLflow
-# Baris set_tracking_uri dihapus agar otomatis membaca environment variable dari GitHub Actions
-mlflow.set_experiment("iris_Models")
+# SETUP MLflow: THE ULTIMATE OVERRIDE
+tracking_path = os.path.abspath("mlruns")
+mlflow.set_tracking_uri(f"file://{tracking_path}")
+# Baris set_experiment DIHAPUS agar MLflow otomatis masuk ke default experiment (mlruns/0)
+# yang dibutuhkan oleh Dockerfile di GitHub Actions.
 
 # LOAD PREPROCESSED DATA
 df = pd.read_csv(args.data_path)
@@ -47,7 +49,7 @@ with mlflow.start_run(run_name="RandomForest_Iris_Baseline") as run:
 
     y_pred = model.predict(X_test)
 
-    # EVALUATION (Using 'weighted' because Iris is a multiclass dataset)
+    # EVALUATION
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred, average='weighted')
     recall = recall_score(y_test, y_pred, average='weighted')
