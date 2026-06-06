@@ -1,11 +1,13 @@
-name: MLProject
-
-conda_env: conda.yaml
-
-entry_points:
-  main:
-    parameters:
-      data_path: {type: string, default: "iris_preprosesing.csv"}
-      test_size: {type: float, default: 0.2}
-      random_state: {type: int, default: 42}
-    command: "python modelling.py --data_path {data_path} --test_size {test_size} --random_state {random_state}"
+name: mlflow-env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.7
+  - pip
+  - pip:
+      - mlflow==2.22.4
+      - scikit-learn==1.6.1
+      - pandas>=1.5.0
+      - numpy>=1.25.0
+      - scipy>=1.11.0
+      - imbalanced-learn
