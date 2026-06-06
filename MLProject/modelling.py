@@ -19,7 +19,7 @@ parser.add_argument('--random_state', type=int, default=42)
 args = parser.parse_args()
 
 # SETUP MLflow
-mlflow.set_tracking_uri("http://127.0.0.1:5000")
+# Baris set_tracking_uri dihapus agar otomatis membaca environment variable dari GitHub Actions
 mlflow.set_experiment("iris_Models")
 
 # LOAD PREPROCESSED DATA
