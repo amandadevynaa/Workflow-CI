@@ -1,0 +1,164 @@
+name: workflow-ci-mlflow
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12.7
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Verify Python installation
+        run: |
+          python --version
+          pip --version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mlflow==2.22.4 pandas scikit-learn==1.6.1 numpy scipy imbalanced-learn
+
+      - name: Run MLflow project
+        working-directory: MLProject
+        env:
+          MLFLOW_TRACKING_URI: file://${{ github.workspace }}/MLProject/mlruns
+        run: mlflow run . --env-manager=local
+
+      - name: Extract run_id
+        id: runid
+        working-directory: MLProject
+        env:
+          MLFLOW_TRACKING_URI: file://${{ github.workspace }}/MLProject/mlruns
+        run: |
+          # Method 1: Try to read from the saved file
+          if [ -f "mlflow_run_id.txt" ]; then
+            RUN_ID=$(cat mlflow_run_id.txt)
+            echo "Found run_id from file: $RUN_ID"
+          else
+            # Method 2: Find the most recent run directory using timestamp-based sorting
+            echo "Run ID file not found, searching in mlruns directory..."
+            RUN_ID=$(find mlruns/0 -maxdepth 1 -type d -name '[0-9a-f]*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2 | xargs -r basename)
+          fi
+          
+          # Validate run_id
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" == "0" ]; then
+            echo "ERROR: Could not extract valid run_id"
+            echo "Listing MLflow directory structure:"
+            find mlruns -type d | head -30
+            echo "Listing MLflow files:"
+            find mlruns -type f | head -30
+            exit 1
+          fi
+          
+          # Verify the run_id is a valid 32-character hex string
+          if ! echo "$RUN_ID" | grep -qE '^[0-9a-f]{32}$'; then
+            echo "ERROR: Invalid run_id format: $RUN_ID"
+            exit 1
+          fi
+          
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          echo "Extracted MLflow run_id: $RUN_ID"
+
+      - name: Upload MLflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow_artifacts_${{ steps.runid.outputs.run_id }}
+          path: MLProject/mlruns
+
+      - name: Build Docker model image
+        working-directory: MLProject
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          RUN_ID="${{ steps.runid.outputs.run_id }}"
+          if [ -z "$RUN_ID" ]; then
+            echo "ERROR: run_id is empty"
+            exit 1
+          fi
+
+          DOCKERHUB_USERNAME="$(printf '%s' "$DOCKERHUB_USERNAME" | tr -d '[:space:]')"
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "ERROR: Docker Hub username is empty"
+            exit 1
+          fi
+          
+          echo "Building Docker image for run_id: $RUN_ID"
+          
+          # Verify the model artifact exists
+          MODEL_PATH="mlruns/0/$RUN_ID/artifacts/model"
+          if [ ! -d "$MODEL_PATH" ]; then
+            echo "ERROR: Model path does not exist: $MODEL_PATH"
+            echo "Listing artifacts directory:"
+            find mlruns/0/$RUN_ID -type d
+            exit 1
+          fi
+          
+          # GANTI NAMA IMAGE KE IRIS-MODEL
+          IMAGE="$DOCKERHUB_USERNAME/iris-model:latest"
+          
+          cat > Dockerfile <<'EOF'
+          FROM python:3.12-slim
+
+          ARG RUN_ID
+
+          ENV RUN_ID="${RUN_ID}" \
+              MLFLOW_TRACKING_URI="file:///app/mlruns" \
+              PYTHONUNBUFFERED=1
+
+          WORKDIR /app
+
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends build-essential \
+              && rm -rf /var/lib/apt/lists/*
+
+          # Menggunakan requirements.txt yang di-generate otomatis oleh MLflow dari dalam folder model
+          COPY mlruns/0/${RUN_ID}/artifacts/model/requirements.txt /app/requirements.txt
+          RUN python -m pip install --upgrade pip \
+              && pip install --no-cache-dir -r /app/requirements.txt \
+              && pip install --no-cache-dir "fastapi==0.109.2" "starlette==0.36.3"
+
+          COPY mlruns /app/mlruns
+
+          EXPOSE 8000
+
+          CMD mlflow models serve \
+              -m "/app/mlruns/0/${RUN_ID}/artifacts/model" \
+              --host 0.0.0.0 \
+              --port 8000 \
+              --env-manager local
+          EOF
+
+          docker build \
+            --build-arg RUN_ID="$RUN_ID" \
+            -t "$IMAGE" \
+            .
+
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          DOCKERHUB_USERNAME="$(printf '%s' "$DOCKERHUB_USERNAME" | tr -d '[:space:]')"
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - name: Push Docker image to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          DOCKERHUB_USERNAME="$(printf '%s' "$DOCKERHUB_USERNAME" | tr -d '[:space:]')"
+          # GANTI NAMA IMAGE KE IRIS-MODEL
+          IMAGE="$DOCKERHUB_USERNAME/iris-model:latest"
+          docker push "$IMAGE"
+
+      - name: Complete job
+        run: echo "Job complete"
